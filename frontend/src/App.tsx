@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   fetchHealth,
   fetchQueryHistory,
@@ -182,19 +182,19 @@ export default function App() {
   }, [searchText, sourceCards, statusFilter, typeFilter]);
 
   useEffect(() => {
-    if (filteredCards.length === 0) {
+    if (sourceCards.length === 0) {
       setActiveCardId("");
       return;
     }
-    if (!activeCardId || !filteredCards.some((card) => card.id === activeCardId)) {
-      setActiveCardId(filteredCards[0].id);
+    if (!activeCardId || !sourceCards.some((card) => card.id === activeCardId)) {
+      setActiveCardId(sourceCards[0].id);
     }
-  }, [activeCardId, filteredCards]);
+  }, [activeCardId, sourceCards]);
 
   const themeClass = screen === "sources" ? "theme-sources" : "theme-workspace";
   const activeCard = useMemo(
-    () => filteredCards.find((card) => card.id === activeCardId) ?? filteredCards[0],
-    [activeCardId, filteredCards]
+    () => sourceCards.find((card) => card.id === activeCardId) ?? sourceCards[0],
+    [activeCardId, sourceCards]
   );
 
   useEffect(() => {
@@ -228,7 +228,7 @@ export default function App() {
     }
     const timer = window.setInterval(() => {
       loadData();
-    }, 5000);
+    }, 2000);
     return () => window.clearInterval(timer);
   }, [hasActiveStream, loadData]);
 
@@ -252,7 +252,7 @@ export default function App() {
     try {
       setIsRunningQuery(true);
       setError("");
-      const result = await runQuery(sql, queryMode, accuracyTarget);
+      const result = await runQuery(sql, queryMode, accuracyTarget, activeCard?.source.id);
       setQueryResult(result);
       if (result.approx) {
         setResultView("approx");
@@ -315,7 +315,7 @@ export default function App() {
       setConnectionOpen(false);
       await loadData();
       setActiveCardId(created.id);
-      setScreen("sources");
+      setScreen("workspace");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to import CSV");
     }
@@ -349,7 +349,7 @@ export default function App() {
       if (createdList.length > 0) {
         setActiveCardId(createdList[0].id);
       }
-      setScreen("sources");
+      setScreen("workspace");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to register Postgres source");
     }
@@ -431,6 +431,8 @@ export default function App() {
             sql={sql}
             onSqlChange={setSql}
             activeCard={activeCard}
+            sourceCards={sourceCards}
+            onSelectSource={setActiveCardId}
             health={health}
             hasActiveStream={hasActiveStream}
             queryMode={queryMode}
@@ -1400,6 +1402,8 @@ function WorkspaceView({
   sql,
   onSqlChange,
   activeCard,
+  sourceCards,
+  onSelectSource,
   health,
   hasActiveStream,
   queryMode,
@@ -1427,6 +1431,8 @@ function WorkspaceView({
   sql: string;
   onSqlChange: (value: string) => void;
   activeCard?: SourceCard;
+  sourceCards: SourceCard[];
+  onSelectSource: (id: string) => void;
   health: string;
   hasActiveStream: boolean;
   queryMode: QueryMode;
@@ -1786,4 +1792,20 @@ function inferTableName(name: string, fallbackValue: string): string {
     ?.replace(/\.[a-zA-Z0-9]+$/, "")
     .toLowerCase() ?? "";
   return raw.replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+function chooseAvailableResultView(
+  currentView: "approx" | "exact",
+  result: RunQueryResponse
+): "approx" | "exact" {
+  if (currentView === "exact" && result.exact) {
+    return "exact";
+  }
+  if (currentView === "approx" && result.approx) {
+    return "approx";
+  }
+  if (result.exact) {
+    return "exact";
+  }
+  return "approx";
 }

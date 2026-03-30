@@ -493,7 +493,7 @@ export default function App() {
   return (
     <div className={`qs-root ${themeClass}`}>
       <div className="qs-shell">
-        <aside className="qs-sidebar sidebar-light">
+        <aside className="qs-sidebar sidebar-dark">
           <div>
             <div className="brand-row">
               <img src={aqpLogo} alt="AQP Engine" className="brand-logo" />
@@ -542,7 +542,7 @@ export default function App() {
         </aside>
 
         <main className="qs-main">
-          <header className={`qs-topbar ${screen === "dashboard" ? "dashboard-topbar" : ""}`}>
+          <header className="qs-topbar">
             {screen === "sources" ? (
               <div className="top-search-wrap">
                 <span className="search-icon">⌕</span>
@@ -571,7 +571,7 @@ export default function App() {
                 {screen === "workspace"
                   ? "Query Workspace"
                   : screen === "history"
-                  ? "Query History"
+                  ? "Saved Queries & History"
                   : "Settings"}
               </h2>
             )}
@@ -606,7 +606,7 @@ export default function App() {
 
       {connectionOpen ? (
         <div className="connection-overlay" onClick={() => setConnectionOpen(false)}>
-          <aside className="connection-drawer" onClick={(event) => event.stopPropagation()}>
+          <aside className="connection-drawer sources-dark-theme" onClick={(event) => event.stopPropagation()}>
             <div className="drawer-header">
               <h2>Add Data Source</h2>
               <button className="drawer-close" type="button" onClick={() => setConnectionOpen(false)}>
@@ -1028,7 +1028,7 @@ function HistoryView({
   onRerunQuery: (sql: string) => void;
 }) {
   return (
-    <section className="screen-body history-body">
+    <section className="screen-body history-body history-dark-theme">
       <div className="section-head">
         <div>
           <h1>Query History</h1>
@@ -1168,7 +1168,7 @@ function SettingsView({
   }
 
   return (
-    <section className="screen-body settings-body">
+    <section className="screen-body settings-body settings-dark-theme">
       <div className="section-head">
         <div>
           <h1>Settings</h1>
@@ -1302,7 +1302,7 @@ function SourcesView({
   streamActionId: string;
 }) {
   return (
-    <section className="screen-body sources-body">
+    <section className="screen-body sources-body sources-dark-theme">
       <div className="section-head">
         <div>
           <h1>Data Sources</h1>
@@ -1535,7 +1535,7 @@ function WorkspaceView({
   const exactDisplay = getResultDisplay(exactResult);
 
   return (
-    <section className="screen-body workspace-body ws-new">
+    <section className="screen-body workspace-body workspace-dark-theme ws-new">
       {/* ─── Workspace Tabs ─── */}
       <div className="ws-tabs">
         <button
@@ -1672,6 +1672,15 @@ function WorkspaceView({
         </div>
       </div>
 
+      {/* ─── Side-by-Side Table ─── */}
+      {queryResult?.exact && queryResult?.approx && queryResult.exact.schema.length > 1 && (
+        <SideBySideTable 
+           exactResult={queryResult.exact} 
+           approxResult={queryResult.approx} 
+           rowCount={activeCard?.source.raw_row_count ?? queryResult.exact.metric.row_count} 
+        />
+      )}
+
       {/* ─── Full Data Table ─── */}
       {activeResult && activeResult.rows.length > 1 && (
         <div className="ws-full-table">
@@ -1721,6 +1730,86 @@ function WorkspaceView({
         </div>
       )}
     </section>
+  );
+}
+
+/* ═══════════════════════════════════════════════════
+   SIDE BY SIDE TABLE
+   ═══════════════════════════════════════════════════ */
+
+function SideBySideTable({ 
+  exactResult, 
+  approxResult, 
+  rowCount 
+}: { 
+  exactResult: QueryResult; 
+  approxResult: QueryResult; 
+  rowCount: number; 
+}) {
+  if (!exactResult.rows.length || !approxResult.rows.length) return null;
+
+  const groupCol = exactResult.schema[0];
+  const valCol = exactResult.schema[1] || "value";
+
+  // Build merged data
+  const merged: Array<{key: string, exactVal: number, approxVal: number, errorPct: number}> = [];
+  const approxMap = new Map();
+  for (const r of approxResult.rows) {
+    approxMap.set(String(r[groupCol]), r[valCol]);
+  }
+
+  for (const exactR of exactResult.rows) {
+    const key = String(exactR[groupCol]);
+    const exactVal = Number(exactR[valCol]) || 0;
+    const approxVal = approxMap.has(key) ? Number(approxMap.get(key)) : 0;
+    
+    let errorPct = 0;
+    if (exactVal !== 0) {
+      errorPct = ((approxVal - exactVal) / Math.abs(exactVal)) * 100;
+    }
+
+    merged.push({
+      key,
+      exactVal,
+      approxVal,
+      errorPct
+    });
+  }
+
+  return (
+    <div className="ws-full-table">
+      <div className="panel-header">
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          <span className="table-icon">⛁</span>
+          <h3 style={{ textTransform: 'uppercase', letterSpacing: '0.05em', color: '#cbd5e1' }}>SIDE-BY-SIDE DATA TABLE</h3>
+          <span className="table-subtitle">{merged.length} groups • {(rowCount || exactResult.metric.row_count).toLocaleString()} rows scanned</span>
+        </div>
+      </div>
+      <div className="table-shell">
+        <table>
+          <thead>
+            <tr>
+              <th style={{ color: '#94a3b8' }}>{groupCol}</th>
+              <th className="exact-col">{valCol} (EXACT)</th>
+              <th className="approx-col">{valCol} (APPROX)</th>
+              <th className="error-col" style={{ textAlign: 'right' }}>∆ ERROR</th>
+            </tr>
+          </thead>
+          <tbody>
+            {merged.map((row, i) => (
+              <tr key={i}>
+                <td style={{ fontWeight: 700, color: '#f8fafc' }}>{row.key}</td>
+                <td className="exact-col">{row.exactVal.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                <td className="approx-col">{row.approxVal.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                <td className="error-col" style={{ textAlign: 'right', color: Math.abs(row.errorPct) <= 2.0 ? '#34d399' : '#fb923c' }}>
+                  {row.errorPct > 0 ? '+' : ''}{row.errorPct.toFixed(2)}%
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 

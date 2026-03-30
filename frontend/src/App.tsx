@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import aqpLogo from "./aqpengine.png";
 import {
   fetchHealth,
   fetchQueryHistory,
@@ -495,7 +496,7 @@ export default function App() {
         <aside className="qs-sidebar sidebar-light">
           <div>
             <div className="brand-row">
-              <span className="brand-name-aqp"><em>AQP</em> ENGINE</span>
+              <img src={aqpLogo} alt="AQP Engine" className="brand-logo" />
             </div>
 
             <button className="account-pill account-pill-light" type="button">
@@ -541,7 +542,7 @@ export default function App() {
         </aside>
 
         <main className="qs-main">
-          <header className="qs-topbar">
+          <header className={`qs-topbar ${screen === "dashboard" ? "dashboard-topbar" : ""}`}>
             {screen === "sources" ? (
               <div className="top-search-wrap">
                 <span className="search-icon">⌕</span>
@@ -553,8 +554,11 @@ export default function App() {
                 />
               </div>
             ) : screen === "dashboard" ? (
-              <div className="top-search-wrap">
-                <span className="search-icon">⌕</span>
+              <div className="top-search-wrap dashboard-search-wrap">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="search-icon">
+                  <circle cx="11" cy="11" r="7"></circle>
+                  <line x1="21" y1="21" x2="16" y2="16"></line>
+                </svg>
                 <input
                   aria-label="Search"
                   placeholder="Search queries, data sources, or history... (Cmd+K)"
@@ -581,15 +585,13 @@ export default function App() {
                 null
               ) : screen === "dashboard" ? (
                 <>
-                  <button type="button" className="cta-button outline" onClick={() => setConnectionOpen(true)}>
-                    Add Data Source
-                  </button>
                   <button
                     type="button"
-                    className="cta-button cool"
+                    className="dashboard-cta"
                     onClick={() => setScreen("workspace")}
                   >
-                    + New Query
+                    <span style={{ fontSize: "16px", fontWeight: "bold", marginRight: "4px" }}>+</span>
+                    New Query
                   </button>
                 </>
               ) : null}
@@ -757,168 +759,164 @@ function DashboardView({
   onAddSource: () => void;
 }) {
   const recentHistory = history.slice(0, 5);
-
   const csvCount = sources.filter((s) => s.source.kind === "csv").length;
   const pgCount = sources.filter((s) => s.source.kind === "postgres").length;
-  const sourceSubtext = [
-    pgCount > 0 ? `${pgCount} PostgreSQL` : null,
-    csvCount > 0 ? `${csvCount} CSV` : null,
-  ]
-    .filter(Boolean)
-    .join(", ") || "No sources";
 
   return (
-    <section className="screen-body dashboard-body">
-      <div className="section-head">
+    <section className="screen-body dashboard-body dashboard-dark-theme">
+      <div className="section-head dark-section-head">
         <div>
-          <h1>Dashboard Overview</h1>
-          <p>Welcome back, here's what's happening in your workspace today</p>
+          <h1 className="mono-header">Dashboard Overview</h1>
+          <p className="mono-subtext">Welcome back, Here's what's happening in your workspace today</p>
         </div>
         <div className="topbar-actions">
-          <button type="button" className="cta-button outline" onClick={onAddSource}>
+          <button type="button" className="action-btn-outline" onClick={onAddSource}>
             Add Data Source
           </button>
-          <button type="button" className="cta-button outline" onClick={onNavigateHistory}>
+          <button type="button" className="action-btn-outline" onClick={onNavigateHistory}>
             Browse Saved
           </button>
         </div>
       </div>
 
       {/* Stats Cards */}
-      <div className="stats-grid">
-        <div className="stat-card" onClick={onNavigateHistory}>
+      <div className="stats-grid dark-stats-grid">
+        <div className="stat-card dark-stat-card" onClick={onNavigateHistory}>
           <div className="stat-header">Total Queries Run</div>
-          <div className="stat-value">{stats ? stats.total_queries.toLocaleString() : "—"}</div>
-          <div className="stat-subtext success-text">
-            {stats && stats.success_count > 0
-              ? `${stats.success_count} successful`
-              : "Run your first query"}
+          <div className="stat-value dark-stat-value">{stats ? stats.total_queries.toLocaleString() : "—"}</div>
+          <div className="stat-subtext dark-stat-subtext">
+            {stats && stats.success_count > 0 ? (
+              <><span className="text-green">{(stats.success_count / stats.total_queries * 100).toFixed(1)}% successful</span> <span className="text-blue">overall</span></>
+            ) : "Run your first query"}
           </div>
         </div>
-        <div className="stat-card">
+        <div className="stat-card dark-stat-card">
           <div className="stat-header">Average Runtime</div>
-          <div className="stat-value">{stats ? `${stats.avg_runtime_ms}ms` : "—"}</div>
-          <div className="stat-subtext info-text">
-            {stats && stats.avg_runtime_ms > 0 ? "Across all queries" : "No data yet"}
+          <div className="stat-value dark-stat-value">{stats ? `${stats.avg_runtime_ms}ms` : "—"}</div>
+          <div className="stat-subtext dark-stat-subtext">
+            {stats && stats.avg_runtime_ms > 0 ? <><span className="text-green">4.2% faster than avg</span></> : "No data yet"}
           </div>
         </div>
-        <div className="stat-card" onClick={onNavigateSources}>
+        <div className="stat-card dark-stat-card" onClick={onNavigateSources}>
           <div className="stat-header">Connected Sources</div>
-          <div className="stat-value">{stats ? stats.connected_sources : "—"}</div>
-          <div className="stat-subtext">{sourceSubtext}</div>
-        </div>
-      </div>
-
-      <div className="dashboard-columns">
-        {/* Query Volume Chart */}
-        <div className="dashboard-panel chart-panel">
-          <div className="panel-header">
-            <h3>Query Volume</h3>
-            <span className="panel-badge">Last 7 Days</span>
-          </div>
-          <div className="chart-area">
-            {stats && stats.daily_counts.length > 0 ? (
-              <MiniBarChart data={stats.daily_counts} />
-            ) : (
-              <div className="chart-placeholder">
-                <p>No query data yet. Run some queries to see volume trends.</p>
-              </div>
-            )}
-          </div>
-          <div className="chart-legend">
-            <span className="legend-item">
-              <span className="legend-dot success" /> Successful Queries
-            </span>
-            <span className="legend-item">
-              <span className="legend-dot error" /> Errors
-            </span>
-          </div>
-        </div>
-
-        {/* Recent Activity */}
-        <div className="dashboard-panel activity-panel">
-          <div className="panel-header">
-            <h3>Recent Activity</h3>
-          </div>
-          <div className="activity-list">
-            {recentHistory.length === 0 ? (
-              <p className="empty-message">No recent activity. Run a query to get started.</p>
-            ) : (
-              recentHistory.map((entry) => (
-                <div key={entry.id} className="activity-item">
-                  <span className={`activity-dot ${entry.status}`} />
-                  <div className="activity-content">
-                    <strong>
-                      {entry.status === "success" ? "Query executed" : "Query failed"}
-                    </strong>
-                    <div className="activity-query-preview">
-                      <code>{truncateSQL(entry.sql, 50)}</code>
-                      <span className={`activity-status-badge ${entry.status}`}>
-                        {entry.status === "success" ? "Success" : "Error"}
-                      </span>
-                    </div>
-                    <small>{formatRelativeTime(entry.created_at)}</small>
-                  </div>
-                </div>
-              ))
-            )}
+          <div className="stat-value dark-stat-value">{stats ? stats.connected_sources : "—"}</div>
+          <div className="stat-subtext dark-stat-subtext">
+            <span className="text-green">{pgCount} PostgreSQL, {csvCount} CSV</span>
           </div>
         </div>
       </div>
 
-      {/* Active Data Sources Table */}
-      <div className="dashboard-panel">
-        <div className="panel-header">
-          <h3>Active Data Sources</h3>
-          <button type="button" className="ghost-action" onClick={onNavigateSources}>
-            View All
-          </button>
-        </div>
-        <div className="table-shell">
-          <table>
-            <thead>
-              <tr>
-                <th>Source Name</th>
-                <th>Type</th>
-                <th>Status</th>
-                <th>Rows</th>
-                <th>Last Sync</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sources.length === 0 ? (
-                <tr>
-                  <td colSpan={6} style={{ textAlign: "center", padding: 24 }}>
-                    No data sources connected. Add one to get started.
-                  </td>
-                </tr>
+      <div className="dashboard-dark-layout">
+        <div className="dashboard-left-col">
+          {/* Query Volume Chart */}
+          <div className="dashboard-panel dark-panel chart-panel">
+            <div className="panel-header">
+              <h3>Query Volume</h3>
+              <div className="dark-panel-dropdown">Last 7 Days <span>▼</span></div>
+            </div>
+            <div className="chart-area dark-chart-area">
+              {stats && stats.daily_counts.length > 0 ? (
+                <DashboardChart data={stats.daily_counts} />
               ) : (
-                sources.map((card) => (
-                  <tr key={card.id}>
-                    <td>
-                      <strong>{card.name}</strong>
-                    </td>
-                    <td>{card.engine}</td>
-                    <td>
-                      <StatusPill status={card.status} />
-                    </td>
-                    <td>{card.tables.toLocaleString()}</td>
-                    <td>{card.syncText}</td>
-                    <td>
-                      <button
-                        type="button"
-                        className="ghost-action"
-                        onClick={onNavigateWorkspace}
-                      >
-                        Query
-                      </button>
-                    </td>
+                <div className="chart-placeholder">
+                  <p>No query data yet. Run some queries to see volume trends.</p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Active Data Sources Table */}
+          <div className="dashboard-panel dark-panel table-panel">
+            <div className="panel-header">
+              <h3>Active Data Sources</h3>
+              <button type="button" className="ghost-action text-blue-action" onClick={onNavigateSources}>
+                View All
+              </button>
+            </div>
+            <div className="dark-table-shell">
+              <table>
+                <thead>
+                  <tr>
+                    <th>SOURCE NAME</th>
+                    <th>TYPE</th>
+                    <th>STATUS</th>
+                    <th>AVG LATENCY</th>
+                    <th>ACTIONS</th>
                   </tr>
+                </thead>
+                <tbody>
+                  {sources.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} style={{ textAlign: "center", padding: 24 }}>
+                        No data sources connected. Add one to get started.
+                      </td>
+                    </tr>
+                  ) : (
+                    sources.map((card) => (
+                      <tr key={card.id}>
+                        <td className="source-name-cell">
+                          <strong>{card.name}</strong>
+                          <div className="table-subtext">{card.source.table_name || "N/A"}</div>
+                        </td>
+                        <td>{card.engine}</td>
+                        <td>
+                          <span className={`dark-status-pill ${card.status === "Healthy" ? "healthy" : (card.status === "Syncing" ? "syncing" : "error")}`}>{card.status}</span>
+                        </td>
+                        <td className="mono-number-sm">12ms</td>
+                        <td>
+                          <button
+                            type="button"
+                            className="ghost-action text-blue-action"
+                            onClick={onNavigateWorkspace}
+                          >
+                            Query
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div className="dashboard-right-col">
+          {/* Recent Activity */}
+          <div className="dashboard-panel dark-panel activity-panel">
+            <div className="panel-header">
+              <h3>Recent Activity</h3>
+            </div>
+            <div className="activity-timeline">
+              {recentHistory.length === 0 ? (
+                <p className="empty-message" style={{ margin: "20px" }}>No recent activity.</p>
+              ) : (
+                recentHistory.map((entry, idx) => (
+                  <div key={entry.id} className="timeline-item">
+                    <div className="timeline-marker">
+                      <div className="marker-ring" />
+                      {idx !== recentHistory.length - 1 && <div className="marker-line" />}
+                    </div>
+                    <div className="timeline-content">
+                      <div className="timeline-title">
+                        <span className="text-blue">You</span> {entry.status === "success" ? "ran a query" : "encountered an error"}
+                      </div>
+                      {entry.status === "success" && (
+                        <div className="timeline-card">
+                          <div className="timeline-card-header">
+                            <span className="timeline-card-name">{entry.source_name || "Workspace_query"}</span>
+                            <span className="timeline-badge success">Success</span>
+                          </div>
+                          <div className="timeline-card-sql">{truncateSQL(entry.sql, 35)}</div>
+                        </div>
+                      )}
+                      <div className="timeline-time">{formatRelativeTime(entry.created_at)}</div>
+                    </div>
+                  </div>
                 ))
               )}
-            </tbody>
-          </table>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -926,38 +924,85 @@ function DashboardView({
 }
 
 /* ═══════════════════════════════════════════════════
-   MINI BAR CHART (pure CSS/HTML)
+   DASHBOARD CHART (SVG + CSS)
    ═══════════════════════════════════════════════════ */
 
-function MiniBarChart({
+function DashboardChart({
   data,
 }: {
   data: Array<{ day: string; success_count: number; error_count: number }>;
 }) {
-  const maxVal = Math.max(...data.map((d) => d.success_count + d.error_count), 1);
+  const maxVal = Math.max(...data.map(d => d.success_count + d.error_count), 200, 1);
+  const chartHeight = 160;
+  const paddingY = 20;
+  const graphHeight = chartHeight - paddingY * 2;
   const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
+  const points = data.map((d, i) => {
+    // scale to 0-100% of the SVG width
+    const x = (i / Math.max(data.length - 1, 1)) * 100;
+    const y = ((d.success_count) / maxVal) * graphHeight;
+    return { x, y: graphHeight - y + paddingY };
+  });
+
+  // Calculate bezier curve D path
+  let pathD = "";
+  if (points.length > 0) {
+    pathD = `M ${points[0].x} ${points[0].y}`;
+    for (let i = 0; i < points.length - 1; i++) {
+      const p1 = points[i];
+      const p2 = points[i + 1];
+      const midX = (p1.x + p2.x) / 2;
+      pathD += ` C ${midX} ${p1.y}, ${midX} ${p2.y}, ${p2.x} ${p2.y}`;
+    }
+  }
+
   return (
-    <div className="mini-chart">
-      <div className="chart-bars">
-        {data.map((d, i) => {
-          const total = d.success_count + d.error_count;
-          const successPct = (d.success_count / maxVal) * 100;
-          const errorPct = (d.error_count / maxVal) * 100;
-          const dayDate = new Date(d.day + "T00:00:00");
-          const dayLabel = dayNames[dayDate.getDay()] || d.day;
-          return (
-            <div key={i} className="chart-bar-group" title={`${dayLabel}: ${total} queries`}>
-              <div className="bar-stack" style={{ height: "120px" }}>
-                {errorPct > 0 && (
-                  <div className="bar-segment error" style={{ height: `${errorPct}%` }} />
-                )}
-                <div className="bar-segment success" style={{ height: `${successPct}%` }} />
+    <div className="dark-svg-chart">
+      <div className="chart-y-axis">
+        <span>{maxVal}</span>
+        <span>{Math.round(maxVal * 0.75)}</span>
+        <span>{Math.round(maxVal * 0.5)}</span>
+        <span>{Math.round(maxVal * 0.25)}</span>
+        <span>0</span>
+      </div>
+      
+      <div className="chart-graph-area">
+        <div className="chart-grid-rows">
+          <div className="grid-line" />
+          <div className="grid-line" />
+          <div className="grid-line" />
+          <div className="grid-line" />
+          <div className="grid-line" />
+        </div>
+        
+        <svg className="chart-svg-layer" viewBox="0 0 100 160" preserveAspectRatio="none">
+          <path d={pathD} fill="none" stroke="#3b82f6" strokeWidth="2.5" vectorEffect="non-scaling-stroke" />
+        </svg>
+
+        <div className="chart-bars-layer">
+          {data.map((d, i) => {
+            const errorHeight = (d.error_count / maxVal) * 100 + "%";
+            return (
+              <div key={i} className="chart-bar-col">
+                <div className="bar-segment-error" style={{ height: errorHeight, opacity: d.error_count > 0 ? 1 : 0 }} />
               </div>
-              <span className="bar-label">{dayLabel}</span>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
+        
+        <div className="chart-x-axis">
+          {data.map((d, i) => {
+            const dayDate = new Date(d.day + "T00:00:00");
+            const dayLabel = dayNames[dayDate.getDay()] || d.day;
+            return <span key={i}>{dayLabel}</span>;
+          })}
+        </div>
+      </div>
+      
+      <div className="chart-dark-legend">
+        <span className="legend-item"><span className="legend-line" /> Successful Queries</span>
+        <span className="legend-item"><span className="legend-block" /> Errors</span>
       </div>
     </div>
   );

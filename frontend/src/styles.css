@@ -674,6 +674,17 @@ textarea {
   cursor: not-allowed;
 }
 
+.chip-select {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 8px;
+  background: rgba(30, 41, 59, 0.68);
+  color: #dbeafe;
+  padding: 6px 9px;
+  font-weight: 700;
+  font-size: 13px;
+  min-width: 260px;
+}
+
 .editor-wrap {
   border: 1px solid rgba(99, 102, 241, 0.26);
   border-radius: var(--panel-radius);

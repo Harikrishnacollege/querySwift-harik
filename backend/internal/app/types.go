@@ -53,6 +53,7 @@ type RunQueryRequest struct {
 	SQL            string    `json:"sql"`
 	Mode           QueryMode `json:"mode"`
 	AccuracyTarget float64   `json:"accuracy_target"`
+	SourceID       string    `json:"source_id,omitempty"`
 }
 
 type QueryMetric struct {

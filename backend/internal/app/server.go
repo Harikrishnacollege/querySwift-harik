@@ -21,6 +21,7 @@ import (
 type Server struct {
 	db            *sql.DB
 	mu            sync.RWMutex
+	writeMu       sync.Mutex
 	sources       map[string]*SourceConfig
 	streamCancels map[string]context.CancelFunc
 }
@@ -30,6 +31,12 @@ func NewServer(dbPath string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// DuckDB is embedded and much more stable with a single shared connection.
+	// This prevents connection-level concurrency from invalidating the database.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
 
 	server := &Server{
 		db:            db,
@@ -208,6 +215,8 @@ func (s *Server) handleCSVImport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	source := normalizeSource(req, SourceKindCSV)
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	if err := s.importCSV(source); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -227,6 +236,8 @@ func (s *Server) handleRegisterPostgres(w http.ResponseWriter, r *http.Request) 
 	}
 
 	source := normalizeSource(req, SourceKindPostgres)
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	if err := s.fullSyncPostgres(source); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -446,6 +457,9 @@ func (s *Server) importCSV(source *SourceConfig) error {
 }
 
 func (s *Server) SyncSource(ctx context.Context, sourceID string) (*SourceConfig, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
 	source, err := s.getSource(sourceID)
 	if err != nil {
 		return nil, err
@@ -472,9 +486,17 @@ func (s *Server) RunQuery(ctx context.Context, req RunQueryRequest) (*RunQueryRe
 		return nil, err
 	}
 
-	source, err := s.findSourceByTable(parsed.Table)
-	if err != nil {
-		return nil, err
+	var source *SourceConfig
+	if req.SourceID != "" {
+		source, err = s.getSource(req.SourceID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		source, err = s.findSourceByTable(parsed.Table)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	response := &RunQueryResponse{Mode: req.Mode}

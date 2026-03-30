@@ -136,19 +136,19 @@ export default function App() {
   }, [searchText, sourceCards, statusFilter, typeFilter]);
 
   useEffect(() => {
-    if (filteredCards.length === 0) {
+    if (sourceCards.length === 0) {
       setActiveCardId("");
       return;
     }
-    if (!activeCardId || !filteredCards.some((card) => card.id === activeCardId)) {
-      setActiveCardId(filteredCards[0].id);
+    if (!activeCardId || !sourceCards.some((card) => card.id === activeCardId)) {
+      setActiveCardId(sourceCards[0].id);
     }
-  }, [activeCardId, filteredCards]);
+  }, [activeCardId, sourceCards]);
 
   const themeClass = screen === "workspace" ? "theme-workspace" : "theme-sources";
   const activeCard = useMemo(
-    () => filteredCards.find((card) => card.id === activeCardId) ?? filteredCards[0],
-    [activeCardId, filteredCards]
+    () => sourceCards.find((card) => card.id === activeCardId) ?? sourceCards[0],
+    [activeCardId, sourceCards]
   );
 
   useEffect(() => {
@@ -182,9 +182,37 @@ export default function App() {
     }
     const timer = window.setInterval(() => {
       loadData();
-    }, 5000);
+    }, 2000);
     return () => window.clearInterval(timer);
   }, [hasActiveStream, loadData]);
+
+  useEffect(() => {
+    if (screen !== "workspace" || !hasActiveStream) {
+      return;
+    }
+
+    let inFlight = false;
+
+    const refreshLiveQuery = async () => {
+      if (inFlight || !sql.trim()) {
+        return;
+      }
+      inFlight = true;
+      try {
+        const result = await runQuery(sql, queryMode, accuracyTarget, activeCard?.source.id);
+        setQueryResult(result);
+        setResultView((currentView) => chooseAvailableResultView(currentView, result));
+      } catch {
+        // Ignore background refresh errors to avoid noisy transient stream failures.
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    refreshLiveQuery();
+    const timer = window.setInterval(refreshLiveQuery, 2000);
+    return () => window.clearInterval(timer);
+  }, [screen, hasActiveStream, activeCard?.source.id, activeCard?.source.streaming, sql, queryMode, accuracyTarget]);
 
   async function submitQuery() {
     if (!sql.trim()) {
@@ -195,13 +223,9 @@ export default function App() {
     try {
       setIsRunningQuery(true);
       setError("");
-      const result = await runQuery(sql, queryMode, accuracyTarget);
+      const result = await runQuery(sql, queryMode, accuracyTarget, activeCard?.source.id);
       setQueryResult(result);
-      if (result.approx) {
-        setResultView("approx");
-      } else if (result.exact) {
-        setResultView("exact");
-      }
+      setResultView((currentView) => chooseAvailableResultView(currentView, result));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Query failed");
     } finally {
@@ -229,7 +253,7 @@ export default function App() {
       setConnectionOpen(false);
       await loadData();
       setActiveCardId(created.id);
-      setScreen("sources");
+      setScreen("workspace");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to import CSV");
     }
@@ -263,7 +287,7 @@ export default function App() {
       if (createdList.length > 0) {
         setActiveCardId(createdList[0].id);
       }
-      setScreen("sources");
+      setScreen("workspace");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to register Postgres source");
     }
@@ -391,6 +415,8 @@ export default function App() {
               sql={sql}
               onSqlChange={setSql}
               activeCard={activeCard}
+              sourceCards={sourceCards}
+              onSelectSource={(id) => setActiveCardId(id)}
               health={health}
               hasActiveStream={hasActiveStream}
               queryMode={queryMode}
@@ -729,6 +755,8 @@ function WorkspaceView({
   sql,
   onSqlChange,
   activeCard,
+  sourceCards,
+  onSelectSource,
   health,
   hasActiveStream,
   queryMode,
@@ -745,6 +773,8 @@ function WorkspaceView({
   sql: string;
   onSqlChange: (value: string) => void;
   activeCard?: SourceCard;
+  sourceCards: SourceCard[];
+  onSelectSource: (id: string) => void;
   health: string;
   hasActiveStream: boolean;
   queryMode: QueryMode;
@@ -761,12 +791,18 @@ function WorkspaceView({
   return (
     <section className="screen-body workspace-body">
       <div className="workspace-dbbar">
-        <button type="button" className="chip success">
-          ● {activeCard?.name ?? "No source selected"}
-        </button>
-        <button type="button" className="chip muted">
-          ◫ {activeCard ? displayTableName(activeCard.source) : "public"}
-        </button>
+        <select
+          className="chip-select"
+          value={activeCard?.id ?? ""}
+          onChange={(event) => onSelectSource(event.target.value)}
+          aria-label="Select table"
+        >
+          {sourceCards.map((card) => (
+            <option key={card.id} value={card.id}>
+              {card.name} - {displayTableName(card.source)}
+            </option>
+          ))}
+        </select>
         <button type="button" className="chip muted">
           {health}
         </button>
@@ -988,4 +1024,20 @@ function inferTableName(name: string, fallbackValue: string): string {
     ?.replace(/\.[a-zA-Z0-9]+$/, "")
     .toLowerCase() ?? "";
   return raw.replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+function chooseAvailableResultView(
+  currentView: "approx" | "exact",
+  result: RunQueryResponse
+): "approx" | "exact" {
+  if (currentView === "exact" && result.exact) {
+    return "exact";
+  }
+  if (currentView === "approx" && result.approx) {
+    return "approx";
+  }
+  if (result.exact) {
+    return "exact";
+  }
+  return "approx";
 }

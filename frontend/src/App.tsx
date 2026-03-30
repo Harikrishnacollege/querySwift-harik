@@ -5,35 +5,69 @@ import {
   importCSV,
   registerPostgres,
   runQuery,
+  syncSource,
 } from "./api";
-import type { QueryMode, RunQueryResponse, SourceConfig } from "./types";
+import type { QueryMode, QueryResult, RunQueryResponse, SourceConfig } from "./types";
 
-const defaultSQL = "SELECT COUNT(*) AS total_rows FROM sales";
+type Screen = "sources" | "workspace";
 
 type ConnectionMode = "csv" | "postgres";
+type CardStatus = "Healthy" | "Auth Failed" | "Syncing";
+
+type SourceCard = {
+  id: string;
+  name: string;
+  engine: string;
+  owner: string;
+  ownerInitials: string;
+  status: CardStatus;
+  syncText: string;
+  tables: number;
+  syncProgress?: number;
+  source: SourceConfig;
+};
+
+const editorTabs = ["user_analytics.sql", "Untitled-1"];
+
+const defaultSql = `-- Get top users by order volume in last 30 days WITH user_stats AS (
+SELECT u.id, u.full_name, u.email,
+COUNT(o.id) AS total_orders, SUM(o.total_amount) AS total_spent
+FROM users u LEFT JOIN orders o ON u.id = o.user_id
+WHERE o.created_at > NOW() - INTERVAL '30 days'
+GROUP BY u.id, u.full_name, u.email )
+SELECT * FROM user_stats WHERE total_spent > 1000 ORDER BY total_spent DESC;`;
 
 export default function App() {
+  const [screen, setScreen] = useState<Screen>("sources");
+  const [sql, setSql] = useState(defaultSql);
+  const [sources, setSources] = useState<SourceConfig[]>([]);
   const [health, setHealth] = useState("Checking backend...");
   const [error, setError] = useState("");
-  const [sources, setSources] = useState<SourceConfig[]>([]);
-  const [selectedGroupId, setSelectedGroupId] = useState<string>("");
-  const [selectedTableId, setSelectedTableId] = useState<string>("");
-  const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [activeCardId, setActiveCardId] = useState("");
+  const [searchText, setSearchText] = useState("");
+  const [typeFilter, setTypeFilter] = useState<"all" | "csv" | "postgres">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "healthy" | "auth-failed" | "syncing">("all");
   const [connectionOpen, setConnectionOpen] = useState(false);
   const [connectionMode, setConnectionMode] = useState<ConnectionMode>("csv");
   const [queryMode, setQueryMode] = useState<QueryMode>("compare");
   const [accuracyTarget, setAccuracyTarget] = useState(0.9);
-  const [sql, setSQL] = useState(defaultSQL);
   const [queryResult, setQueryResult] = useState<RunQueryResponse | null>(null);
+  const [resultView, setResultView] = useState<"approx" | "exact">("approx");
+  const [isRunningQuery, setIsRunningQuery] = useState(false);
   const [csvForm, setCSVForm] = useState({
     name: "CSV Dataset",
     file_path: "",
+    table_name: "csv_dataset",
     stratify_columns: "region",
     sample_rate: 0.1,
   });
   const [pgForm, setPGForm] = useState({
     name: "Postgres Database",
     postgres_dsn: "",
+    table_name: "postgres_dataset",
+    postgres_schema: "public",
+    postgres_table: "",
     primary_key: "id",
     watermark_column: "updated_at",
     poll_interval_seconds: 15,
@@ -43,6 +77,7 @@ export default function App() {
 
   async function loadData() {
     try {
+      setIsLoading(true);
       setError("");
       const [healthPayload, sourcePayload] = await Promise.all([fetchHealth(), fetchSources()]);
       setHealth(
@@ -55,6 +90,8 @@ export default function App() {
       const message = err instanceof Error ? err.message : "Unknown error";
       setHealth("Backend unavailable");
       setError(message);
+    } finally {
+      setIsLoading(false);
     }
   }
 
@@ -62,249 +99,279 @@ export default function App() {
     loadData();
   }, []);
 
-  const sourceGroups = useMemo(() => {
-    const grouped = new Map<
-      string,
-      {
-        id: string;
-        name: string;
-        kind: SourceConfig["kind"];
-        tables: SourceConfig[];
-      }
-    >();
-
-    for (const source of sources) {
-      const groupId = source.source_group || source.id;
-      const existing = grouped.get(groupId);
-      if (existing) {
-        existing.tables.push(source);
-        continue;
-      }
-      grouped.set(groupId, {
-        id: groupId,
+  const sourceCards = useMemo(() => {
+    return sources.map((source) => {
+      const status = normalizeStatus(source);
+      return {
+        id: source.id,
         name: source.name,
-        kind: source.kind,
-        tables: [source],
-      });
-    }
-
-    return Array.from(grouped.values()).map((group) => ({
-      ...group,
-      tables: group.tables.sort((a, b) =>
-        displayTableName(a).localeCompare(displayTableName(b))
-      ),
-    }));
+        engine: source.kind === "postgres" ? "PostgreSQL" : "CSV",
+        owner: source.kind === "postgres" ? "DB Team" : "Data Team",
+        ownerInitials: source.kind === "postgres" ? "DB" : "DT",
+        status,
+        syncText: source.last_sync_at ? formatRelativeTime(source.last_sync_at) : "Never synced",
+        tables: Math.max(source.raw_row_count, source.sample_row_count),
+        syncProgress: status === "Syncing" ? 45 : undefined,
+        source,
+      } satisfies SourceCard;
+    });
   }, [sources]);
 
-  useEffect(() => {
-    if (sourceGroups.length === 0) {
-      setSelectedGroupId("");
-      setSelectedTableId("");
-      return;
-    }
-
-    if (!selectedGroupId || !sourceGroups.some((group) => group.id === selectedGroupId)) {
-      const firstGroup = sourceGroups[0];
-      setSelectedGroupId(firstGroup.id);
-      setSelectedTableId(firstGroup.tables[0]?.id ?? "");
-      return;
-    }
-
-    const currentGroup = sourceGroups.find((group) => group.id === selectedGroupId);
-    if (!currentGroup) {
-      return;
-    }
-    if (!selectedTableId || !currentGroup.tables.some((table) => table.id === selectedTableId)) {
-      setSelectedTableId(currentGroup.tables[0]?.id ?? "");
-    }
-  }, [selectedGroupId, selectedTableId, sourceGroups]);
-
-  const selectedGroup =
-    sourceGroups.find((group) => group.id === selectedGroupId) ?? sourceGroups[0] ?? null;
-  const visibleTables = selectedGroup?.tables ?? [];
-  const selectedTable =
-    visibleTables.find((table) => table.id === selectedTableId) ?? visibleTables[0] ?? null;
+  const filteredCards = useMemo(() => {
+    const query = searchText.trim().toLowerCase();
+    return sourceCards.filter((card) => {
+      const matchesText =
+        query.length === 0 ||
+        card.name.toLowerCase().includes(query) ||
+        card.source.table_name.toLowerCase().includes(query);
+      const matchesType = typeFilter === "all" || card.source.kind === typeFilter;
+      const statusKey = card.status.toLowerCase().replace(" ", "-") as
+        | "healthy"
+        | "auth-failed"
+        | "syncing";
+      const matchesStatus = statusFilter === "all" || statusKey === statusFilter;
+      return matchesText && matchesType && matchesStatus;
+    });
+  }, [searchText, sourceCards, statusFilter, typeFilter]);
 
   useEffect(() => {
-    if (selectedTable) {
-      setSQL(`SELECT COUNT(*) AS total_rows FROM ${selectedTable.table_name}`);
+    if (filteredCards.length === 0) {
+      setActiveCardId("");
+      return;
     }
-  }, [selectedTable?.id]);
+    if (!activeCardId || !filteredCards.some((card) => card.id === activeCardId)) {
+      setActiveCardId(filteredCards[0].id);
+    }
+  }, [activeCardId, filteredCards]);
+
+  const themeClass = screen === "workspace" ? "theme-workspace" : "theme-sources";
+  const activeCard = useMemo(
+    () => filteredCards.find((card) => card.id === activeCardId) ?? filteredCards[0],
+    [activeCardId, filteredCards]
+  );
+
+  useEffect(() => {
+    if (!activeCard?.source.table_name) {
+      return;
+    }
+    setSql(`SELECT COUNT(*) AS total_rows FROM ${activeCard.source.table_name}`);
+  }, [activeCard?.source.id]);
+
+  const activeResult = useMemo<QueryResult | null>(() => {
+    if (!queryResult) {
+      return null;
+    }
+    if (resultView === "exact" && queryResult.exact) {
+      return queryResult.exact;
+    }
+    if (resultView === "approx" && queryResult.approx) {
+      return queryResult.approx;
+    }
+    return queryResult.approx ?? queryResult.exact ?? null;
+  }, [queryResult, resultView]);
+
+  async function submitQuery() {
+    if (!sql.trim()) {
+      setError("Please enter a SQL query.");
+      return;
+    }
+
+    try {
+      setIsRunningQuery(true);
+      setError("");
+      const result = await runQuery(sql, queryMode, accuracyTarget);
+      setQueryResult(result);
+      if (result.approx) {
+        setResultView("approx");
+      } else if (result.exact) {
+        setResultView("exact");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Query failed");
+    } finally {
+      setIsRunningQuery(false);
+    }
+  }
 
   async function submitCSV() {
+    const filePath = stripWrappingQuotes(csvForm.file_path.trim());
+    const tableName =
+      csvForm.table_name.trim() || inferTableName(csvForm.name, filePath);
+    if (!filePath || !tableName) {
+      setError("file_path and table_name are required");
+      return;
+    }
+
     try {
       setError("");
       const created = await importCSV({
         ...csvForm,
+        file_path: filePath,
+        table_name: tableName,
         stratify_columns: splitColumns(csvForm.stratify_columns),
       });
       setConnectionOpen(false);
       await loadData();
-      const groupId = created.source_group || created.id;
-      setSelectedGroupId(groupId);
-      setSelectedTableId(created.id);
-      setSQL(`SELECT COUNT(*) AS total_rows FROM ${created.table_name}`);
+      setActiveCardId(created.id);
+      setScreen("sources");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to import CSV");
     }
   }
 
   async function submitPostgres() {
+    const postgresDSN = stripWrappingQuotes(pgForm.postgres_dsn.trim());
+    const postgresTable = pgForm.postgres_table.trim();
+    const tableName =
+      pgForm.table_name.trim() || inferTableName(pgForm.name, postgresTable);
+    if (!postgresDSN || !postgresTable || !tableName) {
+      setError("postgres_dsn, postgres_table, and table_name are required");
+      return;
+    }
+
     try {
       setError("");
-      const created = await registerPostgres({
+      const payload = {
         ...pgForm,
+        postgres_dsn: postgresDSN,
+        postgres_table: postgresTable,
+        table_name: tableName,
         stratify_columns: splitColumns(pgForm.stratify_columns),
-      });
+      };
+      const createdUnknown = (await registerPostgres(payload)) as unknown;
+      const createdList = Array.isArray(createdUnknown)
+        ? (createdUnknown as SourceConfig[])
+        : ([createdUnknown as SourceConfig]);
       setConnectionOpen(false);
       await loadData();
-      if (created.length > 0) {
-        const groupId = created[0].source_group || created[0].id;
-        setSelectedGroupId(groupId);
-        setSelectedTableId(created[0].id);
-        setSQL(`SELECT COUNT(*) AS total_rows FROM ${created[0].table_name}`);
+      if (createdList.length > 0) {
+        setActiveCardId(createdList[0].id);
       }
+      setScreen("sources");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to register Postgres source");
     }
   }
 
-  async function submitQuery() {
+  async function handleSyncSource(id: string) {
     try {
       setError("");
-      setQueryResult(await runQuery(sql, queryMode, accuracyTarget));
+      await syncSource(id);
+      await loadData();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Query failed");
+      setError(err instanceof Error ? err.message : "Unable to sync source");
     }
   }
 
-  function focusTable(source: SourceConfig) {
-    setSelectedTableId(source.id);
-    setSQL(`SELECT COUNT(*) AS total_rows FROM ${source.table_name}`);
-  }
-
   return (
-    <div className="console-app">
-      <header className="topbar">
-        <h1>Approximate Query Engine</h1>
-        <div className="topbar-actions">
-          <span className="health-chip">{health}</span>
-          <div className="source-menu-wrap">
-            <button onClick={() => setSourceMenuOpen((open) => !open)}>Sources</button>
-            {sourceMenuOpen ? (
-              <div className="source-menu">
-                {sourceGroups.length === 0 ? (
-                  <div className="source-menu-empty">No sources yet</div>
-                ) : (
-                  sourceGroups.map((group) => (
-                    <button
-                      key={group.id}
-                      className={`source-menu-item ${
-                        selectedGroup?.id === group.id ? "active" : ""
-                      }`}
-                      onClick={() => {
-                        setSelectedGroupId(group.id);
-                        setSelectedTableId(group.tables[0]?.id ?? "");
-                        setSourceMenuOpen(false);
-                      }}
-                    >
-                      {group.name}
-                    </button>
-                  ))
-                )}
-                <button
-                  className="source-menu-add"
-                  onClick={() => {
-                    setSourceMenuOpen(false);
-                    setConnectionOpen(true);
-                  }}
-                >
-                  Add source
-                </button>
-              </div>
-            ) : null}
-          </div>
-        </div>
-      </header>
+    <div className={`qs-root ${themeClass}`}>
+      <div className="qs-shell">
+        <aside className="qs-sidebar">
+          <div>
+            <div className="brand-row">
+              <span className="brand-icon">⚡</span>
+              <span className="brand-name">QuerySwift</span>
+            </div>
 
-      <div className="workspace">
-        <aside className="table-sidebar">
-          <div className="sidebar-header">
-            <h2>Tables</h2>
+            <button className="account-pill" type="button">
+              <span className="account-avatar">A</span>
+              <span>Acme Corp</span>
+              <span className="caret">▾</span>
+            </button>
+
+            <nav className="nav-sections" aria-label="Navigation">
+              <NavButton label="Project & Workspace" icon="◫" />
+              <NavButton
+                label="Query Workspace"
+                icon="〉_"
+                active={screen === "workspace"}
+                onClick={() => setScreen("workspace")}
+              />
+              <NavButton label="Saved Queries & History" icon="↺" />
+              <NavButton
+                label="Data Sources"
+                icon="⛁"
+                active={screen === "sources"}
+                onClick={() => setScreen("sources")}
+              />
+            </nav>
+
+            <p className="nav-heading">CONFIGURATION</p>
+            <NavButton label="Settings" icon="⚙" />
           </div>
-          <div className="table-list">
-            {visibleTables.length === 0 ? (
-              <div className="empty-note">No tables loaded yet.</div>
-            ) : null}
-            {visibleTables.map((table) => (
-              <button
-                key={table.id}
-                className={`table-item ${selectedTable?.id === table.id ? "active" : ""}`}
-                onClick={() => focusTable(table)}
-              >
-                <strong>{displayTableName(table)}</strong>
-              </button>
-            ))}
-          </div>
+
+          <footer className="user-panel">
+            <span className="user-avatar">JD</span>
+            <div>
+              <strong>John Doe</strong>
+              <p>john@acmecorp.com</p>
+            </div>
+          </footer>
         </aside>
 
-        <main className="query-stage">
-          <section className="editor-panel">
-            <div className="editor-toolbar">
-              <h2>{selectedTable ? displayTableName(selectedTable) : "Query"}</h2>
-              <div className="toolbar-controls">
-                <label className="compact-field">
-                  <span>Mode</span>
-                  <select
-                    value={queryMode}
-                    onChange={(event) => setQueryMode(event.target.value as QueryMode)}
-                  >
-                    <option value="compare">Compare</option>
-                    <option value="exact">Exact</option>
-                    <option value="approx">Approx</option>
-                  </select>
-                </label>
-                <label className="compact-field slider-field">
-                  <span>{Math.round(accuracyTarget * 100)}%</span>
-                  <input
-                    type="range"
-                    min="0.5"
-                    max="0.99"
-                    step="0.01"
-                    value={accuracyTarget}
-                    onChange={(event) => setAccuracyTarget(Number(event.target.value))}
-                  />
-                </label>
-                <button onClick={submitQuery}>Run</button>
-              </div>
+        <main className="qs-main">
+          <header className="qs-topbar">
+            <div className="top-search-wrap">
+              <span className="search-icon">⌕</span>
+              <input
+                aria-label="Search"
+                value={searchText}
+                onChange={(event) => setSearchText(event.target.value)}
+                placeholder={
+                  screen === "sources"
+                    ? "Search data sources... (Cmd+K)"
+                    : "Search schema... (Cmd+K)"
+                }
+              />
             </div>
 
-            <textarea
-              className="query-editor"
-              value={sql}
-              onChange={(event) => setSQL(event.target.value)}
-              rows={10}
-              spellCheck={false}
+            <div className="topbar-actions">
+              {screen === "sources" ? (
+                <button type="button" className="cta-button warm" onClick={() => setConnectionOpen(true)}>
+                  + Add Data Source
+                </button>
+              ) : (
+                <button type="button" className="cta-button cool" onClick={submitQuery}>
+                  {isRunningQuery ? "Running..." : "▶ Run All"}
+                </button>
+              )}
+            </div>
+          </header>
+
+          {error ? <div className="inline-error">{error}</div> : null}
+
+          {screen === "sources" ? (
+            <SourcesView
+              cards={filteredCards}
+              activeCardId={activeCard?.id ?? ""}
+              typeFilter={typeFilter}
+              statusFilter={statusFilter}
+              onTypeFilter={setTypeFilter}
+              onStatusFilter={setStatusFilter}
+              onAddSource={() => setConnectionOpen(true)}
+              onSelectCard={(id) => {
+                setActiveCardId(id);
+                setScreen("workspace");
+              }}
+              onSyncSource={handleSyncSource}
+              loading={isLoading}
             />
-          </section>
-
-          <section className="results-panel">
-            <div className="results-header">
-              <h2>Data</h2>
-              {error ? <div className="error-chip">{error}</div> : null}
-            </div>
-
-            {!queryResult ? (
-              <div className="empty-note">
-                <code>SELECT COUNT(*) AS total_rows FROM {selectedTable?.table_name ?? "sales"}</code>
-              </div>
-            ) : null}
-
-            {queryResult?.exact ? <ResultCard title="Exact" result={queryResult.exact} /> : null}
-            {queryResult?.approx ? (
-              <ResultCard title="Approximate" result={queryResult.approx} />
-            ) : null}
-          </section>
+          ) : (
+            <WorkspaceView
+              sql={sql}
+              onSqlChange={setSql}
+              activeCard={activeCard}
+              health={health}
+              queryMode={queryMode}
+              onQueryMode={setQueryMode}
+              accuracyTarget={accuracyTarget}
+              onAccuracyTarget={setAccuracyTarget}
+              resultView={resultView}
+              onResultView={setResultView}
+              queryResult={queryResult}
+              activeResult={activeResult}
+            />
+          )}
         </main>
       </div>
 
@@ -312,20 +379,22 @@ export default function App() {
         <div className="connection-overlay" onClick={() => setConnectionOpen(false)}>
           <aside className="connection-drawer" onClick={(event) => event.stopPropagation()}>
             <div className="drawer-header">
-              <h2>Sources</h2>
-              <button className="drawer-close" onClick={() => setConnectionOpen(false)}>
-                x
+              <h2>Add Data Source</h2>
+              <button className="drawer-close" type="button" onClick={() => setConnectionOpen(false)}>
+                ×
               </button>
             </div>
 
             <div className="drawer-tabs">
               <button
+                type="button"
                 className={connectionMode === "csv" ? "active" : ""}
                 onClick={() => setConnectionMode("csv")}
               >
                 CSV
               </button>
               <button
+                type="button"
                 className={connectionMode === "postgres" ? "active" : ""}
                 onClick={() => setConnectionMode("postgres")}
               >
@@ -347,6 +416,12 @@ export default function App() {
                   placeholder="C:\\data\\sales.csv"
                 />
                 <Field
+                  label="Internal table name"
+                  value={csvForm.table_name}
+                  onChange={(value) => setCSVForm({ ...csvForm, table_name: value })}
+                  placeholder="sales_data"
+                />
+                <Field
                   label="Stratify columns"
                   value={csvForm.stratify_columns}
                   onChange={(value) => setCSVForm({ ...csvForm, stratify_columns: value })}
@@ -357,7 +432,9 @@ export default function App() {
                   value={String(csvForm.sample_rate)}
                   onChange={(value) => setCSVForm({ ...csvForm, sample_rate: Number(value) })}
                 />
-                <button onClick={submitCSV}>Import CSV</button>
+                <button type="button" className="cta-button warm block" onClick={submitCSV}>
+                  Import CSV
+                </button>
               </div>
             ) : (
               <div className="drawer-body">
@@ -371,6 +448,24 @@ export default function App() {
                   value={pgForm.postgres_dsn}
                   onChange={(value) => setPGForm({ ...pgForm, postgres_dsn: value })}
                   placeholder="postgres://user:pass@localhost:5432/dbname"
+                />
+                <Field
+                  label="Postgres schema"
+                  value={pgForm.postgres_schema}
+                  onChange={(value) => setPGForm({ ...pgForm, postgres_schema: value })}
+                  placeholder="public"
+                />
+                <Field
+                  label="Postgres table"
+                  value={pgForm.postgres_table}
+                  onChange={(value) => setPGForm({ ...pgForm, postgres_table: value })}
+                  placeholder="orders"
+                />
+                <Field
+                  label="Internal table name"
+                  value={pgForm.table_name}
+                  onChange={(value) => setPGForm({ ...pgForm, table_name: value })}
+                  placeholder="orders_snapshot"
                 />
                 <Field
                   label="Primary key"
@@ -401,7 +496,9 @@ export default function App() {
                   value={String(pgForm.sample_rate)}
                   onChange={(value) => setPGForm({ ...pgForm, sample_rate: Number(value) })}
                 />
-                <button onClick={submitPostgres}>Register Postgres</button>
+                <button type="button" className="cta-button cool block" onClick={submitPostgres}>
+                  Register Postgres
+                </button>
               </div>
             )}
           </aside>
@@ -411,21 +508,328 @@ export default function App() {
   );
 }
 
-function displayTableName(source: SourceConfig): string {
-  if (source.kind === "postgres") {
-    if (source.postgres_schema && source.postgres_schema !== "public") {
-      return `${source.postgres_schema}.${source.postgres_table || source.table_name}`;
-    }
-    return source.postgres_table || source.table_name;
-  }
-  return source.table_name;
+function NavButton({
+  icon,
+  label,
+  active,
+  onClick,
+}: {
+  icon: string;
+  label: string;
+  active?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <button type="button" className={`nav-button ${active ? "active" : ""}`} onClick={onClick}>
+      <span className="nav-icon">{icon}</span>
+      <span>{label}</span>
+    </button>
+  );
 }
 
-function splitColumns(value: string): string[] {
-  return value
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
+function SourcesView({
+  cards,
+  activeCardId,
+  typeFilter,
+  statusFilter,
+  loading,
+  onTypeFilter,
+  onStatusFilter,
+  onAddSource,
+  onSelectCard,
+  onSyncSource,
+}: {
+  cards: SourceCard[];
+  activeCardId: string;
+  typeFilter: "all" | "csv" | "postgres";
+  statusFilter: "all" | "healthy" | "auth-failed" | "syncing";
+  loading: boolean;
+  onTypeFilter: (value: "all" | "csv" | "postgres") => void;
+  onStatusFilter: (value: "all" | "healthy" | "auth-failed" | "syncing") => void;
+  onAddSource: () => void;
+  onSelectCard: (id: string) => void;
+  onSyncSource: (id: string) => void;
+}) {
+  return (
+    <section className="screen-body sources-body">
+      <div className="section-head">
+        <div>
+          <h1>Data Sources</h1>
+          <p>Manage your database connections and sync settings.</p>
+        </div>
+
+        <div className="filters">
+          <select
+            aria-label="Type filter"
+            value={typeFilter}
+            onChange={(event) =>
+              onTypeFilter(event.target.value as "all" | "csv" | "postgres")
+            }
+          >
+            <option value="all">All Types</option>
+            <option value="postgres">Postgres</option>
+            <option value="csv">CSV</option>
+          </select>
+          <select
+            aria-label="Status filter"
+            value={statusFilter}
+            onChange={(event) =>
+              onStatusFilter(
+                event.target.value as "all" | "healthy" | "auth-failed" | "syncing"
+              )
+            }
+          >
+            <option value="all">All Statuses</option>
+            <option value="healthy">Healthy</option>
+            <option value="syncing">Syncing</option>
+            <option value="auth-failed">Auth Failed</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="cards-grid">
+        {cards.map((card) => (
+          <article
+            key={card.id}
+            className={`source-card ${activeCardId === card.id ? "active" : ""}`}
+            onClick={() => onSelectCard(card.id)}
+          >
+            <header>
+              <div className="source-name-wrap">
+                <span className={`db-badge ${card.status === "Syncing" ? "mysql" : "postgres"}`}>⛁</span>
+                <div>
+                  <h3>{card.name}</h3>
+                  <p>{displayTableName(card.source)}</p>
+                </div>
+              </div>
+              <span className="menu-dot">⋮</span>
+            </header>
+
+            <div className="source-metadata-row">
+              <div>
+                <small>Status</small>
+                <StatusPill status={card.status} />
+              </div>
+              <div>
+                <small>Type</small>
+                <strong>{card.engine}</strong>
+              </div>
+            </div>
+
+            <div className="source-metadata-row compact">
+              <div>
+                <small>Last Sync</small>
+                <strong>{card.syncText}</strong>
+              </div>
+              <div>
+                <small>Owner</small>
+                <div className="owner-tag">
+                  <span>{card.ownerInitials}</span>
+                  <strong>{card.owner}</strong>
+                </div>
+              </div>
+            </div>
+
+            {card.syncProgress ? (
+              <div className="progress-wrap">
+                <small>Syncing tables...</small>
+                <div className="progress-track">
+                  <div style={{ width: `${card.syncProgress}%` }} />
+                </div>
+                <span>{card.syncProgress}%</span>
+              </div>
+            ) : null}
+
+            <footer>
+              <span>◫ {card.tables.toLocaleString()} rows</span>
+              <button
+                type="button"
+                className="ghost-action"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onSyncSource(card.id);
+                }}
+              >
+                Sync now
+              </button>
+            </footer>
+          </article>
+        ))}
+
+        <button type="button" className="add-card" onClick={onAddSource}>
+          <span>＋</span>
+          <strong>Add Data Source</strong>
+          <p>Connect a new database to start querying.</p>
+        </button>
+      </div>
+
+      {!loading && cards.length === 0 ? (
+        <p className="hint-text">No sources match your filters. Add a source to begin.</p>
+      ) : null}
+      {loading ? <p className="hint-text">Loading sources...</p> : null}
+    </section>
+  );
+}
+
+function WorkspaceView({
+  sql,
+  onSqlChange,
+  activeCard,
+  health,
+  queryMode,
+  onQueryMode,
+  accuracyTarget,
+  onAccuracyTarget,
+  resultView,
+  onResultView,
+  queryResult,
+  activeResult,
+}: {
+  sql: string;
+  onSqlChange: (value: string) => void;
+  activeCard?: SourceCard;
+  health: string;
+  queryMode: QueryMode;
+  onQueryMode: (value: QueryMode) => void;
+  accuracyTarget: number;
+  onAccuracyTarget: (value: number) => void;
+  resultView: "approx" | "exact";
+  onResultView: (value: "approx" | "exact") => void;
+  queryResult: RunQueryResponse | null;
+  activeResult: QueryResult | null;
+}) {
+  return (
+    <section className="screen-body workspace-body">
+      <div className="workspace-dbbar">
+        <button type="button" className="chip success">
+          ● {activeCard?.name ?? "No source selected"} ▾
+        </button>
+        <button type="button" className="chip muted">
+          ◫ {activeCard ? displayTableName(activeCard.source) : "public"} ▾
+        </button>
+        <button type="button" className="chip muted">
+          {health}
+        </button>
+      </div>
+
+      <div className="editor-wrap">
+        <div className="editor-tabs">
+          {editorTabs.map((tab, index) => (
+            <button key={tab} type="button" className={index === 0 ? "active" : ""}>
+              {tab}
+              {index === 0 ? " •" : ""}
+            </button>
+          ))}
+          <button type="button">＋</button>
+        </div>
+
+        <div className="editor-toolbar">
+          <button type="button">☰ Format</button>
+          <button type="button">⌁ Explain</button>
+          <label className="tiny-select">
+            <span>Mode</span>
+            <select value={queryMode} onChange={(event) => onQueryMode(event.target.value as QueryMode)}>
+              <option value="compare">Compare</option>
+              <option value="exact">Exact</option>
+              <option value="approx">Approx</option>
+            </select>
+          </label>
+          <label className="tiny-select slider">
+            <span>{Math.round(accuracyTarget * 100)}%</span>
+            <input
+              type="range"
+              min="0.5"
+              max="0.99"
+              step="0.01"
+              value={accuracyTarget}
+              onChange={(event) => onAccuracyTarget(Number(event.target.value))}
+            />
+          </label>
+          <span>Row limit: 1000</span>
+        </div>
+
+        <textarea value={sql} onChange={(event) => onSqlChange(event.target.value)} spellCheck={false} />
+      </div>
+
+      <div className="results-wrap">
+        <header>
+          <div className="result-tabs">
+            <button
+              type="button"
+              className={resultView === "approx" ? "active" : ""}
+              onClick={() => onResultView("approx")}
+              disabled={!queryResult?.approx}
+            >
+              Approximate
+            </button>
+            <button
+              type="button"
+              className={resultView === "exact" ? "active" : ""}
+              onClick={() => onResultView("exact")}
+              disabled={!queryResult?.exact}
+            >
+              Exact
+            </button>
+            <button type="button">Messages</button>
+          </div>
+
+          <div className="result-meta">
+            <span className="ok-mark">{activeResult ? "✓ Success" : "No query run"}</span>
+            <span>{activeResult ? `${activeResult.metric.execution_millis.toFixed(2)} ms` : "--"}</span>
+            <span>{activeResult ? `${activeResult.metric.row_count} rows` : "--"}</span>
+            <span>
+              {activeResult
+                ? `${Math.max(1, activeResult.schema.length * activeResult.rows.length)} values`
+                : "--"}
+            </span>
+            <button type="button">CSV</button>
+          </div>
+        </header>
+
+        <div className="table-shell">
+          {activeResult ? (
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  {activeResult.schema.map((column) => (
+                    <th key={column}>{column}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {activeResult.rows.map((row, index) => (
+                  <tr key={index}>
+                    <td>{index + 1}</td>
+                    {activeResult.schema.map((column) => (
+                      <td key={column}>{String(row[column] ?? "")}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="result-placeholder">
+              Run a query to see live results from your selected source.
+            </div>
+          )}
+        </div>
+
+        <footer>
+          <span>
+            {activeResult
+              ? `Showing 1 to ${activeResult.rows.length} of ${activeResult.metric.row_count} rows`
+              : "No rows"}
+          </span>
+          <div>‹ 1 ›</div>
+        </footer>
+      </div>
+    </section>
+  );
+}
+
+function StatusPill({ status }: { status: SourceCard["status"] }) {
+  return <span className={`status-pill ${status.toLowerCase().replace(" ", "-")}`}>{status}</span>;
 }
 
 function Field({
@@ -454,43 +858,71 @@ function Field({
   );
 }
 
-function ResultCard({
-  title,
-  result,
-}: {
-  title: string;
-  result: NonNullable<RunQueryResponse["exact"]>;
-}) {
-  return (
-    <article className="result-card">
-      <div className="result-headline">
-        <h3>{title}</h3>
-        <div className="result-metrics">
-          <span>{result.metric.execution_millis.toFixed(2)} ms</span>
-          <span>{result.metric.row_count} rows</span>
-        </div>
-      </div>
+function splitColumns(value: string): string[] {
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
 
-      <div className="data-grid">
-        <table>
-          <thead>
-            <tr>
-              {result.schema.map((column) => (
-                <th key={column}>{column}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {result.rows.map((row, index) => (
-              <tr key={index}>
-                {result.schema.map((column) => (
-                  <td key={column}>{String(row[column] ?? "")}</td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </article>
-  );
+function normalizeStatus(source: SourceConfig): CardStatus {
+  const status = (source.status ?? "").toLowerCase();
+  if (source.streaming || status.includes("sync")) {
+    return "Syncing";
+  }
+  if (status.includes("fail") || status.includes("error") || status.includes("auth")) {
+    return "Auth Failed";
+  }
+  return "Healthy";
+}
+
+function displayTableName(source: SourceConfig): string {
+  if (source.kind === "postgres") {
+    if (source.postgres_schema && source.postgres_schema !== "public") {
+      return `${source.postgres_schema}.${source.postgres_table || source.table_name}`;
+    }
+    return source.postgres_table || source.table_name;
+  }
+  return source.table_name;
+}
+
+function formatRelativeTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  const diffMs = Date.now() - date.getTime();
+  const diffMinutes = Math.floor(diffMs / 60000);
+  if (diffMinutes < 1) {
+    return "just now";
+  }
+  if (diffMinutes < 60) {
+    return `${diffMinutes} min${diffMinutes === 1 ? "" : "s"} ago`;
+  }
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) {
+    return `${diffHours}h ago`;
+  }
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays}d ago`;
+}
+
+function stripWrappingQuotes(value: string): string {
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1).trim();
+  }
+  return value;
+}
+
+function inferTableName(name: string, fallbackValue: string): string {
+  const raw = (name || fallbackValue)
+    .trim()
+    .split(/[\\/]/)
+    .pop()
+    ?.replace(/\.[a-zA-Z0-9]+$/, "")
+    .toLowerCase() ?? "";
+  return raw.replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
 }
